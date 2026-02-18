@@ -93,6 +93,11 @@ TRANSLATIONS = {
         "at_dropoff": "At Drop-off Location",
         "upload_all_three": "Please upload all 3 photos before submitting.",
         "weight": "Weight (tons)",
+        "already_submitted_title": "✅ POD Already Submitted",
+        "already_submitted_msg": "A Proof of Delivery was already uploaded for this shipment on **{}**.",
+        "already_submitted_mode": "Upload type: **{}**",
+        "already_submitted_count": "Photos uploaded: **{}**",
+        "already_submitted_note": "If you need to re-upload, please contact dispatch.",
     },
     "ar": {
         "app_title": "📄 إثبات التسليم",
@@ -143,6 +148,11 @@ TRANSLATIONS = {
         "at_dropoff": "في موقع التفريغ",
         "upload_all_three": "يرجى رفع الصور الثلاث قبل الإرسال.",
         "weight": "الوزن (طن)",
+        "already_submitted_title": "✅ تم إرسال إثبات التسليم مسبقاً",
+        "already_submitted_msg": "تم رفع إثبات التسليم لهذه الشحنة بتاريخ **{}**.",
+        "already_submitted_mode": "نوع الرفع: **{}**",
+        "already_submitted_count": "عدد الصور المرفوعة: **{}**",
+        "already_submitted_note": "إذا كنت بحاجة إلى إعادة الرفع، يرجى التواصل مع فريق التشغيل.",
     },
     "ur": {
         "app_title": "📄 ڈیلیوری کا ثبوت",
@@ -193,6 +203,11 @@ TRANSLATIONS = {
         "at_dropoff": "ڈراپ آف مقام پر",
         "upload_all_three": "براہ کرم جمع کرانے سے پہلے تینوں تصاویر اپ لوڈ کریں۔",
         "weight": "وزن (ٹن)",
+        "already_submitted_title": "✅ POD پہلے سے جمع ہو چکا ہے",
+        "already_submitted_msg": "اس شپمنٹ کے لیے ڈیلیوری کا ثبوت **{}** کو اپ لوڈ ہو چکا ہے۔",
+        "already_submitted_mode": "اپ لوڈ کی قسم: **{}**",
+        "already_submitted_count": "اپ لوڈ شدہ تصاویر: **{}**",
+        "already_submitted_note": "اگر آپ کو دوبارہ اپ لوڈ کرنا ہے تو براہ کرم ڈسپیچ سے رابطہ کریں۔",
     },
 }
 
@@ -360,6 +375,21 @@ def save_pod_metadata(shipment_key: str, shipment_data: dict, file_paths: list, 
         json.dump(metadata, f, ensure_ascii=False, indent=2)
 
     return meta_path
+
+
+def get_existing_submission(shipment_key: str) -> dict | None:
+    """
+    Check if a POD has already been submitted for this shipment.
+    Returns the metadata dict if found, None otherwise.
+    """
+    meta_path = os.path.join(POD_STORAGE_DIR, shipment_key, "metadata.json")
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -644,6 +674,79 @@ def render_fallback_upload(shipment: dict):
         st.info(t("upload_all_three"))
 
 
+def render_already_submitted(submission: dict, shipment: dict):
+    """Show a screen indicating POD was already uploaded, with submission details."""
+    # If no language set yet, show language picker first then come back
+    if "language" not in st.session_state:
+        # Quick language selection inline
+        st.markdown(
+            "<h2 style='text-align:center;'>📄 Proof of Delivery</h2>",
+            unsafe_allow_html=True,
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("🇬🇧 English", use_container_width=True, key="als_en"):
+                st.session_state.language = "en"
+                st.rerun()
+        with col2:
+            if st.button("🇸🇦 العربية", use_container_width=True, key="als_ar"):
+                st.session_state.language = "ar"
+                st.rerun()
+        with col3:
+            if st.button("🇵🇰 اردو", use_container_width=True, key="als_ur"):
+                st.session_state.language = "ur"
+                st.rerun()
+        st.stop()
+
+    inject_rtl_css()
+
+    st.markdown(
+        '<div class="success-icon">✅</div>', unsafe_allow_html=True
+    )
+    st.markdown(f"## {t('already_submitted_title')}")
+
+    # Parse and format the upload timestamp
+    uploaded_at = submission.get("uploaded_at", "unknown")
+    try:
+        dt = datetime.fromisoformat(uploaded_at)
+        formatted_date = dt.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        formatted_date = uploaded_at
+
+    st.markdown(t("already_submitted_msg").format(formatted_date))
+
+    mode = submission.get("upload_mode", "single")
+    mode_display = "Single photo" if mode == "single" else "3 photos (fallback)"
+    file_count = len(submission.get("file_paths", []))
+
+    st.markdown(t("already_submitted_mode").format(mode_display))
+    st.markdown(t("already_submitted_count").format(file_count))
+
+    # Show thumbnails of uploaded images
+    file_paths = submission.get("file_paths", [])
+    if file_paths:
+        st.markdown("---")
+        cols = st.columns(min(len(file_paths), 3))
+        for idx, fp in enumerate(file_paths):
+            if os.path.exists(fp):
+                with cols[idx % 3]:
+                    st.image(fp, caption=f"POD #{idx + 1}", use_container_width=True)
+
+    st.markdown("---")
+
+    # Shipment summary
+    border_side = "right" if is_rtl() else "left"
+    st.markdown(f"""
+    <div class="detail-card {'rtl' if is_rtl() else ''}">
+        <p><strong>🔑 {t('shipment_ref')}:</strong> {shipment.get('key', 'N/A')}</p>
+        <p><strong>👤 {t('driver_name')}:</strong> {shipment.get('carrier', 'N/A')}</p>
+        <p><strong>🏁 {t('destination')}:</strong> {shipment.get('destination_name', '')} — {shipment.get('destination_city', '')}</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.info(t("already_submitted_note"))
+
+
 def render_success():
     """Step 4: Success confirmation screen."""
     inject_rtl_css()
@@ -692,6 +795,13 @@ def main():
         st.error("⚠️ Shipment not found or not currently at drop-off status.")
         st.markdown(f"**Shipment Key:** `{shipment_key}`")
         st.markdown("Please contact dispatch if you believe this is an error.")
+        st.stop()
+
+    # ── Check if POD was already submitted ──
+    existing = get_existing_submission(shipment_key)
+    if existing and st.session_state.get("step") != "success":
+        # POD already uploaded — show the result screen
+        render_already_submitted(existing, shipment)
         st.stop()
 
     # ── Initialize session state ──
