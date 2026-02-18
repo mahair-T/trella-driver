@@ -7,13 +7,11 @@ Usage:
     streamlit run app.py
     
     Driver link format:
-    https://<app-url>/?shipment=<shipment_key>
-    
-    Example:
-    https://<app-url>/?shipment=shp51018426a3d0d370
+    https://trella-driver.streamlit.app/?shipment=<shipment_key>
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
 import cv2
@@ -23,7 +21,7 @@ from io import BytesIO
 from datetime import datetime
 import os
 import json
-import hashlib
+import base64
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -32,195 +30,361 @@ REDASH_API_URL = (
     "https://redash.trella.co/api/queries/4922/results.csv"
     "?api_key=TX9ND3NoDL0xHNFcbFKvWwPMQAnouCXcywp1tAdz"
 )
-POD_STORAGE_DIR = "pod_uploads"  # Local storage; replace with S3/GCS in production
+POD_STORAGE_DIR = "pod_uploads"
 MAX_QUALITY_ATTEMPTS = 3
-BLUR_THRESHOLD = 80.0         # Laplacian variance below this = blurry
-DARK_THRESHOLD = 40.0         # Mean brightness below this = too dark
-BRIGHT_THRESHOLD = 240.0      # Mean brightness above this = overexposed
-MIN_EDGE_RATIO = 0.02         # Minimum edge pixel ratio (document detection)
-MIN_RESOLUTION = (640, 480)   # Minimum acceptable resolution
+BLUR_THRESHOLD = 80.0
+DARK_THRESHOLD = 40.0
+BRIGHT_THRESHOLD = 240.0
+MIN_EDGE_RATIO = 0.02
+MIN_RESOLUTION = (640, 480)
 
 # ─────────────────────────────────────────────
 # TRANSLATIONS
 # ─────────────────────────────────────────────
 TRANSLATIONS = {
     "en": {
-        "app_title": "📄 Proof of Delivery",
-        "welcome": "Welcome, Driver!",
-        "select_language": "Select your language",
-        "confirm_details": "Your Shipment Details",
-        "driver_name": "Driver Name",
-        "phone_number": "Phone Number",
-        "license_plate": "License Plate",
-        "pickup": "Pickup",
-        "destination": "Destination",
-        "commodity": "Commodity",
+        "confirm_details": "Shipment Details",
+        "driver_name": "Driver",
+        "phone_number": "Phone",
+        "license_plate": "Plate",
+        "pickup": "From",
+        "destination": "To",
+        "commodity": "Cargo",
         "shipper": "Shipper",
-        "shipment_ref": "Shipment Reference",
+        "shipment_ref": "Shipment",
         "confirm_checkbox": "I confirm these are my details and I am at the drop-off location",
-        "proceed": "Proceed to POD Upload",
+        "proceed": "Continue to Upload",
         "upload_title": "Upload Proof of Delivery",
-        "upload_instructions": "📸 **Photo Instructions for Best Quality:**",
-        "instruction_1": "Place the document on a flat, well-lit surface",
-        "instruction_2": "Hold your phone steady and parallel to the document",
-        "instruction_3": "Make sure all edges of the document are visible",
-        "instruction_4": "Avoid shadows, glare, and reflections",
-        "instruction_5": "Clean your camera lens before taking the photo",
-        "instruction_6": "Use natural daylight if possible",
-        "take_photo": "📷 Take Photo",
-        "upload_file": "Or upload from gallery",
-        "analyzing": "Analyzing image quality...",
-        "quality_passed": "✅ Image quality is good!",
-        "quality_failed": "❌ Image quality issue detected:",
-        "reason_blurry": "The image is blurry. Please hold your phone steady and tap to focus.",
-        "reason_dark": "The image is too dark. Please move to a better-lit area.",
-        "reason_bright": "The image is overexposed. Please avoid direct light/glare on the document.",
-        "reason_low_res": "The image resolution is too low. Please move closer to the document.",
-        "reason_no_document": "No document detected. Please ensure the entire document is visible.",
-        "attempts_remaining": "Attempts remaining: {}",
+        "tip_surface": "Flat, well-lit surface",
+        "tip_steady": "Hold phone steady & parallel",
+        "tip_edges": "All document edges visible",
+        "tip_glare": "No shadows or glare",
+        "tip_lens": "Clean camera lens first",
+        "tip_light": "Use natural daylight",
+        "take_photo": "Open Camera",
+        "upload_file": "Choose from Gallery",
+        "analyzing": "Checking image quality...",
+        "quality_passed": "Image quality looks good!",
+        "quality_failed": "Image quality issue:",
+        "reason_blurry": "Image is blurry — hold steady and tap to focus",
+        "reason_dark": "Too dark — move to a brighter area",
+        "reason_bright": "Too bright — avoid direct light on the document",
+        "reason_low_res": "Resolution too low — move closer to the document",
+        "reason_no_document": "No document detected — make sure it's fully visible",
+        "attempts_remaining": "{} attempts remaining",
         "retake": "Please retake the photo",
-        "fallback_title": "📸 Camera Quality Issue - Upload 3 Photos",
-        "fallback_message": "We're having trouble getting a clear single photo. Please upload **3 different photos** of your POD document from different angles to ensure we capture all details.",
-        "fallback_photo": "Photo {} of 3",
-        "submit_pod": "✅ Submit POD",
-        "submit_fallback": "✅ Submit All 3 Photos",
-        "success_title": "🎉 POD Submitted Successfully!",
+        "fallback_title": "Upload 3 Photos Instead",
+        "fallback_message": "We couldn't get a clear single photo. Please upload 3 photos from different angles.",
+        "fallback_photo": "Photo {}",
+        "submit_pod": "Submit POD",
+        "submit_fallback": "Submit All Photos",
+        "success_title": "POD Submitted!",
         "success_message": "Your proof of delivery has been recorded. You may close this page.",
-        "error_no_shipment": "⚠️ No shipment reference found. Please use the link sent to your phone.",
-        "error_not_found": "⚠️ Shipment not found or not at drop-off status.",
-        "error_api": "⚠️ Could not connect to the server. Please check your internet connection and try again.",
-        "status": "Status",
-        "at_dropoff": "At Drop-off Location",
-        "upload_all_three": "Please upload all 3 photos before submitting.",
-        "weight": "Weight (tons)",
-        "already_submitted_title": "✅ POD Already Submitted",
-        "already_submitted_msg": "A Proof of Delivery was already uploaded for this shipment on **{}**.",
-        "already_submitted_mode": "Upload type: **{}**",
-        "already_submitted_count": "Photos uploaded: **{}**",
-        "already_submitted_note": "If you need to re-upload, please contact dispatch.",
+        "at_dropoff": "At Drop-off",
+        "upload_all_three": "Please upload all 3 photos.",
+        "weight": "Weight",
+        "already_submitted_title": "Already Submitted",
+        "already_submitted_msg": "POD was uploaded on {}",
+        "already_submitted_note": "Need to re-upload? Contact dispatch.",
+        "distance": "Distance",
+        "upload_hint": "Tap above to take a photo or choose from gallery",
     },
     "ar": {
-        "app_title": "📄 إثبات التسليم",
-        "welcome": "!مرحباً أيها السائق",
-        "select_language": "اختر لغتك",
-        "confirm_details": "تفاصيل شحنتك",
-        "driver_name": "اسم السائق",
-        "phone_number": "رقم الهاتف",
-        "license_plate": "رقم اللوحة",
-        "pickup": "نقطة التحميل",
-        "destination": "نقطة التفريغ",
-        "commodity": "نوع البضاعة",
+        "confirm_details": "تفاصيل الشحنة",
+        "driver_name": "السائق",
+        "phone_number": "الهاتف",
+        "license_plate": "اللوحة",
+        "pickup": "من",
+        "destination": "إلى",
+        "commodity": "البضاعة",
         "shipper": "الشاحن",
-        "shipment_ref": "رقم الشحنة",
+        "shipment_ref": "الشحنة",
         "confirm_checkbox": "أؤكد أن هذه بياناتي وأنا في موقع التفريغ",
-        "proceed": "المتابعة لتحميل إثبات التسليم",
+        "proceed": "المتابعة للتحميل",
         "upload_title": "تحميل إثبات التسليم",
-        "upload_instructions": "📸 **تعليمات التصوير للحصول على أفضل جودة:**",
-        "instruction_1": "ضع المستند على سطح مستوٍ ومضاء جيداً",
-        "instruction_2": "أمسك هاتفك بثبات وبشكل موازٍ للمستند",
-        "instruction_3": "تأكد من ظهور جميع حواف المستند",
-        "instruction_4": "تجنب الظلال والوهج والانعكاسات",
-        "instruction_5": "نظّف عدسة الكاميرا قبل التصوير",
-        "instruction_6": "استخدم ضوء النهار الطبيعي إن أمكن",
-        "take_photo": "📷 التقط صورة",
-        "upload_file": "أو ارفع من المعرض",
-        "analyzing": "...جاري تحليل جودة الصورة",
-        "quality_passed": "✅ !جودة الصورة جيدة",
-        "quality_failed": "❌ :تم اكتشاف مشكلة في جودة الصورة",
-        "reason_blurry": "الصورة ضبابية. يرجى تثبيت هاتفك والنقر للتركيز.",
-        "reason_dark": "الصورة مظلمة جداً. يرجى الانتقال إلى مكان أفضل إضاءة.",
-        "reason_bright": "الصورة ساطعة جداً. يرجى تجنب الضوء المباشر على المستند.",
-        "reason_low_res": "دقة الصورة منخفضة جداً. يرجى الاقتراب من المستند.",
-        "reason_no_document": "لم يتم اكتشاف مستند. يرجى التأكد من ظهور المستند بالكامل.",
-        "attempts_remaining": "المحاولات المتبقية: {}",
-        "retake": "يرجى إعادة التقاط الصورة",
-        "fallback_title": "📸 مشكلة في جودة الكاميرا - ارفع ٣ صور",
-        "fallback_message": "نواجه صعوبة في الحصول على صورة واحدة واضحة. يرجى رفع **٣ صور مختلفة** لمستند إثبات التسليم من زوايا مختلفة.",
-        "fallback_photo": "الصورة {} من ٣",
-        "submit_pod": "✅ إرسال إثبات التسليم",
-        "submit_fallback": "✅ إرسال الصور الثلاث",
-        "success_title": "🎉 !تم إرسال إثبات التسليم بنجاح",
-        "success_message": "تم تسجيل إثبات التسليم الخاص بك. يمكنك إغلاق هذه الصفحة.",
-        "error_no_shipment": "⚠️ لم يتم العثور على رقم الشحنة. يرجى استخدام الرابط المرسل إلى هاتفك.",
-        "error_not_found": "⚠️ لم يتم العثور على الشحنة أو أنها ليست في حالة التفريغ.",
-        "error_api": "⚠️ تعذر الاتصال بالخادم. يرجى التحقق من اتصال الإنترنت والمحاولة مرة أخرى.",
-        "status": "الحالة",
+        "tip_surface": "سطح مستوٍ ومضاء جيداً",
+        "tip_steady": "أمسك الهاتف بثبات وبشكل موازٍ",
+        "tip_edges": "جميع حواف المستند ظاهرة",
+        "tip_glare": "بدون ظلال أو انعكاسات",
+        "tip_lens": "نظّف العدسة أولاً",
+        "tip_light": "استخدم ضوء النهار الطبيعي",
+        "take_photo": "فتح الكاميرا",
+        "upload_file": "اختر من المعرض",
+        "analyzing": "...جاري فحص جودة الصورة",
+        "quality_passed": "!جودة الصورة جيدة",
+        "quality_failed": ":مشكلة في جودة الصورة",
+        "reason_blurry": "الصورة ضبابية — ثبّت الهاتف وانقر للتركيز",
+        "reason_dark": "مظلمة جداً — انتقل لمكان أفضل إضاءة",
+        "reason_bright": "ساطعة جداً — تجنب الضوء المباشر",
+        "reason_low_res": "الدقة منخفضة — اقترب من المستند",
+        "reason_no_document": "لم يُكتشف مستند — تأكد من ظهوره بالكامل",
+        "attempts_remaining": "{} محاولات متبقية",
+        "retake": "يرجى إعادة التصوير",
+        "fallback_title": "ارفع ٣ صور بدلاً من ذلك",
+        "fallback_message": "لم نتمكن من الحصول على صورة واحدة واضحة. يرجى رفع ٣ صور من زوايا مختلفة.",
+        "fallback_photo": "صورة {}",
+        "submit_pod": "إرسال إثبات التسليم",
+        "submit_fallback": "إرسال جميع الصور",
+        "success_title": "!تم الإرسال بنجاح",
+        "success_message": "تم تسجيل إثبات التسليم. يمكنك إغلاق هذه الصفحة.",
         "at_dropoff": "في موقع التفريغ",
-        "upload_all_three": "يرجى رفع الصور الثلاث قبل الإرسال.",
-        "weight": "الوزن (طن)",
-        "already_submitted_title": "✅ تم إرسال إثبات التسليم مسبقاً",
-        "already_submitted_msg": "تم رفع إثبات التسليم لهذه الشحنة بتاريخ **{}**.",
-        "already_submitted_mode": "نوع الرفع: **{}**",
-        "already_submitted_count": "عدد الصور المرفوعة: **{}**",
-        "already_submitted_note": "إذا كنت بحاجة إلى إعادة الرفع، يرجى التواصل مع فريق التشغيل.",
+        "upload_all_three": "يرجى رفع الصور الثلاث.",
+        "weight": "الوزن",
+        "already_submitted_title": "تم الإرسال مسبقاً",
+        "already_submitted_msg": "تم رفع إثبات التسليم بتاريخ {}",
+        "already_submitted_note": "تحتاج إعادة الرفع؟ تواصل مع فريق التشغيل.",
+        "distance": "المسافة",
+        "upload_hint": "انقر أعلاه لالتقاط صورة أو الاختيار من المعرض",
     },
     "ur": {
-        "app_title": "📄 ڈیلیوری کا ثبوت",
-        "welcome": "!خوش آمدید، ڈرائیور",
-        "select_language": "اپنی زبان منتخب کریں",
-        "confirm_details": "آپ کی شپمنٹ کی تفصیلات",
-        "driver_name": "ڈرائیور کا نام",
-        "phone_number": "فون نمبر",
-        "license_plate": "نمبر پلیٹ",
-        "pickup": "پک اپ",
-        "destination": "منزل",
-        "commodity": "سامان کی قسم",
+        "confirm_details": "شپمنٹ کی تفصیلات",
+        "driver_name": "ڈرائیور",
+        "phone_number": "فون",
+        "license_plate": "پلیٹ",
+        "pickup": "سے",
+        "destination": "تک",
+        "commodity": "سامان",
         "shipper": "شپر",
-        "shipment_ref": "شپمنٹ حوالہ",
+        "shipment_ref": "شپمنٹ",
         "confirm_checkbox": "میں تصدیق کرتا ہوں کہ یہ میری تفصیلات ہیں اور میں ڈراپ آف مقام پر ہوں",
-        "proceed": "POD اپ لوڈ کریں",
+        "proceed": "اپ لوڈ جاری رکھیں",
         "upload_title": "ڈیلیوری کا ثبوت اپ لوڈ کریں",
-        "upload_instructions": "📸 **بہترین معیار کے لیے تصویر کی ہدایات:**",
-        "instruction_1": "دستاویز کو ایک ہموار، روشن سطح پر رکھیں",
-        "instruction_2": "اپنا فون مستحکم اور دستاویز کے متوازی رکھیں",
-        "instruction_3": "یقینی بنائیں کہ دستاویز کے تمام کنارے نظر آ رہے ہیں",
-        "instruction_4": "سائے، چمک اور عکس سے بچیں",
-        "instruction_5": "تصویر لینے سے پہلے کیمرے کا لینز صاف کریں",
-        "instruction_6": "اگر ممکن ہو تو قدرتی دن کی روشنی استعمال کریں",
-        "take_photo": "📷 تصویر لیں",
-        "upload_file": "یا گیلری سے اپ لوڈ کریں",
-        "analyzing": "...تصویر کے معیار کا تجزیہ ہو رہا ہے",
-        "quality_passed": "✅ !تصویر کا معیار اچھا ہے",
-        "quality_failed": "❌ :تصویر کے معیار میں مسئلہ پایا گیا",
-        "reason_blurry": "تصویر دھندلی ہے۔ براہ کرم اپنا فون مستحکم رکھیں اور فوکس کے لیے ٹیپ کریں۔",
-        "reason_dark": "تصویر بہت اندھیری ہے۔ براہ کرم بہتر روشنی والی جگہ پر جائیں۔",
-        "reason_bright": "تصویر بہت زیادہ روشن ہے۔ براہ کرم دستاویز پر براہ راست روشنی سے بچیں۔",
-        "reason_low_res": "تصویر کی ریزولیوشن بہت کم ہے۔ براہ کرم دستاویز کے قریب جائیں۔",
-        "reason_no_document": "کوئی دستاویز نہیں ملی۔ براہ کرم یقینی بنائیں کہ پوری دستاویز نظر آ رہی ہے۔",
-        "attempts_remaining": "باقی کوششیں: {}",
-        "retake": "براہ کرم دوبارہ تصویر لیں",
-        "fallback_title": "📸 کیمرے کے معیار کا مسئلہ - ٣ تصاویر اپ لوڈ کریں",
-        "fallback_message": "ہمیں ایک واضح تصویر حاصل کرنے میں دشواری ہو رہی ہے۔ براہ کرم اپنی POD دستاویز کی **٣ مختلف تصاویر** مختلف زاویوں سے اپ لوڈ کریں۔",
-        "fallback_photo": "٣ میں سے {} تصویر",
-        "submit_pod": "✅ POD جمع کرائیں",
-        "submit_fallback": "✅ تینوں تصاویر جمع کرائیں",
-        "success_title": "🎉 !ڈیلیوری کا ثبوت کامیابی سے جمع ہو گیا",
-        "success_message": "آپ کا ڈیلیوری کا ثبوت ریکارڈ ہو گیا ہے۔ آپ یہ صفحہ بند کر سکتے ہیں۔",
-        "error_no_shipment": "⚠️ شپمنٹ حوالہ نہیں ملا۔ براہ کرم اپنے فون پر بھیجا گیا لنک استعمال کریں۔",
-        "error_not_found": "⚠️ شپمنٹ نہیں ملی یا ڈراپ آف حالت میں نہیں ہے۔",
-        "error_api": "⚠️ سرور سے رابطہ نہیں ہو سکا۔ براہ کرم اپنا انٹرنیٹ کنکشن چیک کریں اور دوبارہ کوشش کریں۔",
-        "status": "حالت",
+        "tip_surface": "ہموار، روشن سطح پر رکھیں",
+        "tip_steady": "فون مستحکم اور متوازی رکھیں",
+        "tip_edges": "دستاویز کے تمام کنارے نظر آئیں",
+        "tip_glare": "سائے اور چمک سے بچیں",
+        "tip_lens": "پہلے لینز صاف کریں",
+        "tip_light": "قدرتی روشنی استعمال کریں",
+        "take_photo": "کیمرا کھولیں",
+        "upload_file": "گیلری سے منتخب کریں",
+        "analyzing": "...تصویر کا معیار جانچ رہے ہیں",
+        "quality_passed": "!تصویر کا معیار اچھا ہے",
+        "quality_failed": ":تصویر کے معیار میں مسئلہ",
+        "reason_blurry": "تصویر دھندلی ہے — فون مستحکم رکھیں",
+        "reason_dark": "بہت اندھیری — روشن جگہ پر جائیں",
+        "reason_bright": "بہت روشن — براہ راست روشنی سے بچیں",
+        "reason_low_res": "ریزولیوشن کم — دستاویز کے قریب جائیں",
+        "reason_no_document": "دستاویز نہیں ملی — پوری دستاویز دکھائیں",
+        "attempts_remaining": "{} کوششیں باقی",
+        "retake": "دوبارہ تصویر لیں",
+        "fallback_title": "اس کے بجائے ٣ تصاویر اپ لوڈ کریں",
+        "fallback_message": "ہم واضح تصویر حاصل نہیں کر سکے۔ براہ کرم مختلف زاویوں سے ٣ تصاویر اپ لوڈ کریں۔",
+        "fallback_photo": "تصویر {}",
+        "submit_pod": "POD جمع کرائیں",
+        "submit_fallback": "تمام تصاویر جمع کرائیں",
+        "success_title": "!کامیابی سے جمع ہو گیا",
+        "success_message": "ڈیلیوری کا ثبوت ریکارڈ ہو گیا۔ آپ یہ صفحہ بند کر سکتے ہیں۔",
         "at_dropoff": "ڈراپ آف مقام پر",
-        "upload_all_three": "براہ کرم جمع کرانے سے پہلے تینوں تصاویر اپ لوڈ کریں۔",
-        "weight": "وزن (ٹن)",
-        "already_submitted_title": "✅ POD پہلے سے جمع ہو چکا ہے",
-        "already_submitted_msg": "اس شپمنٹ کے لیے ڈیلیوری کا ثبوت **{}** کو اپ لوڈ ہو چکا ہے۔",
-        "already_submitted_mode": "اپ لوڈ کی قسم: **{}**",
-        "already_submitted_count": "اپ لوڈ شدہ تصاویر: **{}**",
-        "already_submitted_note": "اگر آپ کو دوبارہ اپ لوڈ کرنا ہے تو براہ کرم ڈسپیچ سے رابطہ کریں۔",
+        "upload_all_three": "تینوں تصاویر اپ لوڈ کریں۔",
+        "weight": "وزن",
+        "already_submitted_title": "پہلے سے جمع ہو چکا",
+        "already_submitted_msg": "POD {} کو اپ لوڈ ہو چکا ہے",
+        "already_submitted_note": "دوبارہ اپ لوڈ کرنا ہے؟ ڈسپیچ سے رابطہ کریں۔",
+        "distance": "فاصلہ",
+        "upload_hint": "اوپر ٹیپ کریں تصویر لینے یا گیلری سے منتخب کرنے کے لیے",
     },
 }
 
 
 def t(key: str) -> str:
-    """Get translation for the current language."""
     lang = st.session_state.get("language", "en")
     return TRANSLATIONS.get(lang, TRANSLATIONS["en"]).get(key, key)
 
 
 def is_rtl() -> bool:
-    """Check if current language is RTL."""
     return st.session_state.get("language", "en") in ("ar", "ur")
+
+
+# ─────────────────────────────────────────────
+# GLOBAL CSS
+# ─────────────────────────────────────────────
+GLOBAL_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
+
+:root {
+    --trella-blue: #0B4F8A;
+    --trella-light: #E8F1FA;
+    --trella-accent: #14A583;
+    --trella-accent-light: #E6F7F3;
+    --trella-orange: #F5921B;
+    --trella-red: #DC3545;
+    --trella-gray: #6B7280;
+    --trella-border: #E5E7EB;
+    --trella-bg: #F8FAFB;
+    --radius: 12px;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+#MainMenu, footer, header { visibility: hidden !important; height: 0 !important; }
+section[data-testid="stSidebar"] { display: none; }
+div[data-testid="stToolbar"] { display: none; }
+div[data-testid="stDecoration"] { display: none; }
+div[data-testid="stStatusWidget"] { display: none; }
+
+.stApp {
+    background: var(--trella-bg) !important;
+    font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif !important;
+}
+.block-container {
+    padding: 1rem 1rem 5rem 1rem !important;
+    max-width: 480px !important;
+    margin: 0 auto;
+}
+h1, h2, h3, h4, p, span, label, div {
+    font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif !important;
+}
+
+/* ── Cards ── */
+.pod-card {
+    background: #fff;
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    margin-bottom: 0.75rem;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--trella-border);
+}
+.pod-card-accent { border-left: 4px solid var(--trella-accent); }
+.pod-card-accent.rtl { border-left: none; border-right: 4px solid var(--trella-accent); }
+.pod-card-blue { border-left: 4px solid var(--trella-blue); }
+.pod-card-blue.rtl { border-left: none; border-right: 4px solid var(--trella-blue); }
+
+/* ── Detail rows ── */
+.detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #F3F4F6;
+}
+.detail-row:last-child { border-bottom: none; }
+.detail-label {
+    font-size: 0.8rem; font-weight: 500; color: var(--trella-gray);
+    text-transform: uppercase; letter-spacing: 0.03em;
+}
+.detail-value {
+    font-size: 0.95rem; font-weight: 600; color: #1F2937; text-align: right;
+}
+.rtl .detail-value { text-align: left; }
+
+/* ── Route card ── */
+.route-card {
+    background: linear-gradient(135deg, var(--trella-light) 0%, #fff 100%);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    margin-bottom: 0.75rem;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--trella-border);
+}
+.route-point { display: flex; align-items: center; gap: 0.75rem; }
+.route-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.route-dot.origin { background: var(--trella-blue); }
+.route-dot.dest { background: var(--trella-accent); }
+.route-line {
+    width: 2px; height: 28px; margin-left: 5px; opacity: 0.4;
+    background: repeating-linear-gradient(to bottom, var(--trella-gray) 0px, var(--trella-gray) 4px, transparent 4px, transparent 8px);
+}
+.rtl .route-line { margin-left: 0; margin-right: 5px; }
+.route-city { font-size: 1rem; font-weight: 600; color: #1F2937; }
+.route-name { font-size: 0.8rem; color: var(--trella-gray); margin-top: 1px; }
+
+/* ── Badges ── */
+.status-badge {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.3rem 0.75rem; border-radius: 2rem;
+    font-size: 0.75rem; font-weight: 600;
+}
+.status-dropoff { background: var(--trella-accent-light); color: #0D7A60; }
+
+/* ── Tips ── */
+.tips-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.75rem 0; }
+.tip-pill {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.4rem 0.75rem; background: var(--trella-light);
+    border-radius: 2rem; font-size: 0.78rem; color: var(--trella-blue); font-weight: 500;
+}
+
+/* ── Quality feedback ── */
+.quality-pass {
+    background: var(--trella-accent-light); color: #0D7A60;
+    padding: 0.75rem 1rem; border-radius: var(--radius);
+    font-weight: 600; display: flex; align-items: center; gap: 0.5rem; margin: 0.75rem 0;
+}
+.quality-fail {
+    background: #FEF2F2; color: #991B1B;
+    padding: 0.75rem 1rem; border-radius: var(--radius);
+    font-weight: 500; margin: 0.75rem 0; border-left: 3px solid var(--trella-red);
+}
+.quality-fail.rtl { border-left: none; border-right: 3px solid var(--trella-red); }
+.attempts-badge {
+    background: #FEF3C7; color: #92400E;
+    padding: 0.4rem 0.75rem; border-radius: 2rem;
+    font-size: 0.8rem; font-weight: 600; display: inline-block; margin: 0.5rem 0;
+}
+
+/* ── Buttons ── */
+.stButton > button {
+    width: 100%; padding: 0.85rem 1.5rem !important;
+    font-size: 1rem !important; font-weight: 600 !important;
+    border-radius: var(--radius) !important; min-height: 3rem;
+    font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif !important;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--trella-accent) 0%, #0D9B78 100%) !important;
+    border: none !important; color: #fff !important; box-shadow: var(--shadow-md) !important;
+}
+.stCheckbox > label { font-size: 0.9rem !important; padding: 0.75rem 0 !important; line-height: 1.5 !important; }
+
+/* ── Success ── */
+.success-container { text-align: center; padding: 3rem 1rem; }
+.success-check {
+    width: 80px; height: 80px; background: var(--trella-accent-light);
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 1.5rem;
+    animation: pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+@keyframes pop { 0% { transform: scale(0); } 100% { transform: scale(1); } }
+.success-check svg { width: 40px; height: 40px; stroke: var(--trella-accent); }
+.success-title { font-size: 1.5rem; font-weight: 700; color: #1F2937; margin-bottom: 0.5rem; }
+.success-msg { font-size: 0.95rem; color: var(--trella-gray); line-height: 1.6; }
+
+/* ── Header ── */
+.app-header { text-align: center; padding: 1.5rem 0 0.5rem; }
+.app-logo { font-size: 1.5rem; font-weight: 700; color: var(--trella-blue); letter-spacing: -0.02em; }
+.app-logo span { color: var(--trella-accent); }
+.app-subtitle { font-size: 0.85rem; color: var(--trella-gray); margin-top: 0.25rem; }
+
+/* ── Steps ── */
+.steps { display: flex; justify-content: center; gap: 0.5rem; margin: 1rem 0 1.5rem; }
+.step-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--trella-border); transition: all 0.3s ease;
+}
+.step-dot.active { background: var(--trella-blue); width: 24px; border-radius: 4px; }
+.step-dot.done { background: var(--trella-accent); }
+
+.divider { height: 1px; background: var(--trella-border); margin: 1rem 0; }
+
+/* RTL */
+.rtl { direction: rtl; text-align: right; }
+
+/* File uploader styling */
+.stFileUploader > div > div { border-radius: var(--radius) !important; }
+div[data-testid="stFileUploader"] > section > button {
+    font-family: 'IBM Plex Sans', 'IBM Plex Sans Arabic', sans-serif !important;
+}
+</style>
+"""
+
+RTL_CSS = """
+<style>
+.stApp { direction: rtl; text-align: right; }
+.stMarkdown, .stText { direction: rtl; text-align: right; }
+.stCheckbox > label { direction: rtl; }
+div[data-testid="stMetricValue"] { direction: ltr; }
+</style>
+"""
 
 
 # ─────────────────────────────────────────────
@@ -228,19 +392,15 @@ def is_rtl() -> bool:
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_shipment_data() -> pd.DataFrame:
-    """Fetch active drop-off shipments from Redash."""
     try:
         resp = requests.get(REDASH_API_URL, timeout=30)
         resp.raise_for_status()
-        df = pd.read_csv(BytesIO(resp.content))
-        return df
-    except Exception as e:
-        st.error(f"API Error: {e}")
+        return pd.read_csv(BytesIO(resp.content))
+    except Exception:
         return pd.DataFrame()
 
 
 def get_shipment(shipment_key: str) -> dict | None:
-    """Look up a specific shipment by key."""
     df = fetch_shipment_data()
     if df.empty:
         return None
@@ -254,19 +414,8 @@ def get_shipment(shipment_key: str) -> dict | None:
 # IMAGE QUALITY ANALYSIS
 # ─────────────────────────────────────────────
 def analyze_image_quality(image_bytes: bytes) -> dict:
-    """
-    Analyze uploaded image for quality issues.
-    
-    Returns:
-        dict with keys:
-            - passed: bool
-            - reasons: list of translation keys for failure reasons
-            - scores: dict of individual metric scores
-    """
-    # Decode image
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
     if img is None:
         return {"passed": False, "reasons": ["reason_no_document"], "scores": {}}
 
@@ -275,18 +424,15 @@ def analyze_image_quality(image_bytes: bytes) -> dict:
     reasons = []
     scores = {}
 
-    # 1. Resolution check
     scores["resolution"] = f"{w}x{h}"
     if w < MIN_RESOLUTION[0] or h < MIN_RESOLUTION[1]:
         reasons.append("reason_low_res")
 
-    # 2. Blur detection (Laplacian variance)
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
     scores["sharpness"] = round(laplacian_var, 1)
     if laplacian_var < BLUR_THRESHOLD:
         reasons.append("reason_blurry")
 
-    # 3. Brightness analysis
     mean_brightness = np.mean(gray)
     scores["brightness"] = round(mean_brightness, 1)
     if mean_brightness < DARK_THRESHOLD:
@@ -294,15 +440,12 @@ def analyze_image_quality(image_bytes: bytes) -> dict:
     elif mean_brightness > BRIGHT_THRESHOLD:
         reasons.append("reason_bright")
 
-    # 4. Document/edge detection — checks if there's meaningful content
     edges = cv2.Canny(gray, 50, 150)
     edge_ratio = np.count_nonzero(edges) / (h * w)
     scores["edge_ratio"] = round(edge_ratio, 4)
     if edge_ratio < MIN_EDGE_RATIO:
         reasons.append("reason_no_document")
 
-    # 5. Local blur / smudge detection (check if large regions are uniformly blurry)
-    # Split image into grid and check for locally blurry patches
     block_size = 4
     bh, bw = h // block_size, w // block_size
     blurry_blocks = 0
@@ -310,49 +453,30 @@ def analyze_image_quality(image_bytes: bytes) -> dict:
     for i in range(block_size):
         for j in range(block_size):
             block = gray[i * bh:(i + 1) * bh, j * bw:(j + 1) * bw]
-            block_var = cv2.Laplacian(block, cv2.CV_64F).var()
-            if block_var < BLUR_THRESHOLD * 0.5:
+            if cv2.Laplacian(block, cv2.CV_64F).var() < BLUR_THRESHOLD * 0.5:
                 blurry_blocks += 1
-    scores["blurry_regions"] = f"{blurry_blocks}/{total_blocks}"
-    # If more than 60% of blocks are blurry and we haven't already flagged blur
     if blurry_blocks > total_blocks * 0.6 and "reason_blurry" not in reasons:
         reasons.append("reason_blurry")
 
-    return {
-        "passed": len(reasons) == 0,
-        "reasons": reasons,
-        "scores": scores,
-    }
+    return {"passed": len(reasons) == 0, "reasons": reasons, "scores": scores}
 
 
 # ─────────────────────────────────────────────
 # STORAGE
 # ─────────────────────────────────────────────
 def save_pod_image(shipment_key: str, image_bytes: bytes, index: int = 0) -> str:
-    """
-    Save POD image to storage. Returns the file path.
-    
-    In production, replace this with S3/GCS upload.
-    """
     shipment_dir = os.path.join(POD_STORAGE_DIR, shipment_key)
     os.makedirs(shipment_dir, exist_ok=True)
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"pod_{index}_{timestamp}.jpg"
-    filepath = os.path.join(shipment_dir, filename)
-
-    # Save image
+    filepath = os.path.join(shipment_dir, f"pod_{index}_{timestamp}.jpg")
     with open(filepath, "wb") as f:
         f.write(image_bytes)
-
     return filepath
 
 
 def save_pod_metadata(shipment_key: str, shipment_data: dict, file_paths: list, mode: str):
-    """Save metadata JSON alongside POD images."""
     shipment_dir = os.path.join(POD_STORAGE_DIR, shipment_key)
     os.makedirs(shipment_dir, exist_ok=True)
-
     metadata = {
         "shipment_key": shipment_key,
         "job_key": shipment_data.get("job_key", ""),
@@ -364,24 +488,18 @@ def save_pod_metadata(shipment_key: str, shipment_data: dict, file_paths: list, 
         "pickup_city": shipment_data.get("pickup_city", ""),
         "destination_city": shipment_data.get("destination_city", ""),
         "commodity": shipment_data.get("commodity", ""),
-        "upload_mode": mode,  # "single" or "fallback_triple"
+        "upload_mode": mode,
         "file_paths": file_paths,
         "uploaded_at": datetime.now().isoformat(),
         "language": st.session_state.get("language", "en"),
     }
-
     meta_path = os.path.join(shipment_dir, "metadata.json")
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)
-
     return meta_path
 
 
 def get_existing_submission(shipment_key: str) -> dict | None:
-    """
-    Check if a POD has already been submitted for this shipment.
-    Returns the metadata dict if found, None otherwise.
-    """
     meta_path = os.path.join(POD_STORAGE_DIR, shipment_key, "metadata.json")
     if os.path.exists(meta_path):
         try:
@@ -393,434 +511,429 @@ def get_existing_submission(shipment_key: str) -> dict | None:
 
 
 # ─────────────────────────────────────────────
-# UI COMPONENTS
+# UI HELPERS
 # ─────────────────────────────────────────────
-def inject_rtl_css():
-    """Inject RTL styling for Arabic/Urdu."""
-    if is_rtl():
-        st.markdown("""
-        <style>
-            .stApp { direction: rtl; text-align: right; }
-            .stMarkdown, .stText { direction: rtl; text-align: right; }
-            .stCheckbox > label { direction: rtl; }
-            div[data-testid="stMetricValue"] { direction: ltr; }
-        </style>
-        """, unsafe_allow_html=True)
-
-
-def inject_mobile_css():
-    """Optimize layout for mobile devices."""
+def render_header():
     st.markdown("""
-    <style>
-        /* Mobile-first responsive design */
-        .block-container { 
-            padding: 4rem 1rem 3rem 1rem !important; 
-            max-width: 100% !important; 
-        }
-        /* Push content below Streamlit toolbar */
-        header[data-testid="stHeader"] {
-            background: rgba(255, 255, 255, 0.95) !important;
-            backdrop-filter: blur(10px);
-        }
-        /* Hide hamburger menu and footer on mobile for cleaner driver experience */
-        #MainMenu { visibility: hidden; }
-        footer { visibility: hidden; }
-        header { visibility: visible !important; height: 2.5rem !important; }
-        section[data-testid="stSidebar"] { display: none; }
-        /* Larger touch targets */
-        .stButton > button { 
-            width: 100%; 
-            padding: 0.75rem 1.5rem !important; 
-            font-size: 1.1rem !important;
-            min-height: 3rem;
-        }
-        .stCheckbox > label { 
-            font-size: 1rem !important; 
-            padding: 0.5rem 0 !important;
-        }
-        /* Success animation */
-        @keyframes checkmark {
-            0% { transform: scale(0); }
-            50% { transform: scale(1.2); }
-            100% { transform: scale(1); }
-        }
-        .success-icon { 
-            animation: checkmark 0.5s ease-in-out; 
-            font-size: 4rem; 
-            text-align: center; 
-        }
-        /* Info cards */
-        .detail-card {
-            background: #f0f2f6;
-            border-radius: 10px;
-            padding: 1rem;
-            margin: 0.5rem 0;
-            border-left: 4px solid #1f77b4;
-        }
-        .detail-card.rtl {
-            border-left: none;
-            border-right: 4px solid #1f77b4;
-        }
-        /* Quality score badges */
-        .quality-badge {
-            display: inline-block;
-            padding: 0.2rem 0.6rem;
-            border-radius: 1rem;
-            font-size: 0.8rem;
-            font-weight: bold;
-        }
-        .quality-pass { background: #d4edda; color: #155724; }
-        .quality-fail { background: #f8d7da; color: #721c24; }
-    </style>
+    <div class="app-header">
+        <div class="app-logo">trella<span>.</span></div>
+        <div class="app-subtitle">Proof of Delivery</div>
+    </div>
     """, unsafe_allow_html=True)
 
 
-def render_language_selection():
-    """Step 1: Language selection page."""
-    st.markdown(
-        "<h1 style='text-align:center;'>📄 Proof of Delivery</h1>"
-        "<h3 style='text-align:center;'>إثبات التسليم | ڈیلیوری کا ثبوت</h3>",
-        unsafe_allow_html=True,
-    )
-    st.markdown("---")
-    st.markdown(
-        "<h4 style='text-align:center;'>Select your language / اختر لغتك / اپنی زبان منتخب کریں</h4>",
-        unsafe_allow_html=True,
-    )
+def render_steps(current: int):
+    dots = []
+    for i in range(1, 4):
+        if i < current:
+            dots.append('<div class="step-dot done"></div>')
+        elif i == current:
+            dots.append('<div class="step-dot active"></div>')
+        else:
+            dots.append('<div class="step-dot"></div>')
+    st.markdown(f'<div class="steps">{"".join(dots)}</div>', unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns(3)
+
+def apply_rtl():
+    if is_rtl():
+        st.markdown(RTL_CSS, unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────
+# STEP 1 — LANGUAGE
+# ─────────────────────────────────────────────
+def render_language_selection():
+    render_header()
+    render_steps(1)
+
+    st.markdown("""
+    <p style="text-align:center; color: #6B7280; font-size: 0.95rem; margin-bottom: 0.25rem;">
+        Select your language
+    </p>
+    <p style="text-align:center; color: #6B7280; font-size: 0.95rem;">
+        اختر لغتك &nbsp;|&nbsp; اپنی زبان منتخب کریں
+    </p>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3, gap="small")
     with col1:
-        if st.button("🇬🇧 English", use_container_width=True, key="btn_en"):
+        if st.button("🇬🇧\n\nEnglish", use_container_width=True, key="btn_en"):
             st.session_state.language = "en"
             st.session_state.step = "confirm"
             st.rerun()
     with col2:
-        if st.button("🇸🇦 العربية", use_container_width=True, key="btn_ar"):
+        if st.button("🇸🇦\n\nالعربية", use_container_width=True, key="btn_ar"):
             st.session_state.language = "ar"
             st.session_state.step = "confirm"
             st.rerun()
     with col3:
-        if st.button("🇵🇰 اردو", use_container_width=True, key="btn_ur"):
+        if st.button("🇵🇰\n\nاردو", use_container_width=True, key="btn_ur"):
             st.session_state.language = "ur"
             st.session_state.step = "confirm"
             st.rerun()
 
 
+# ─────────────────────────────────────────────
+# STEP 2 — CONFIRM DETAILS
+# ─────────────────────────────────────────────
 def render_confirmation(shipment: dict):
-    """Step 2: Show driver/shipment details and ask for confirmation."""
-    inject_rtl_css()
+    apply_rtl()
+    render_header()
+    render_steps(2)
 
-    st.markdown(f"### {t('confirm_details')}")
+    rtl_class = "rtl" if is_rtl() else ""
+    carrier = shipment.get("carrier", "N/A")
+    mobile = shipment.get("carrier_mobile", "N/A")
+    plate = shipment.get("vehicle_plate", "N/A")
 
-    # Driver details card
-    border_side = "right" if is_rtl() else "left"
+    # Driver card
     st.markdown(f"""
-    <div class="detail-card {'rtl' if is_rtl() else ''}">
-        <p><strong>👤 {t('driver_name')}:</strong> {shipment.get('carrier', 'N/A')}</p>
-        <p><strong>📱 {t('phone_number')}:</strong> {shipment.get('carrier_mobile', 'N/A')}</p>
-        <p><strong>🚛 {t('license_plate')}:</strong> {shipment.get('vehicle_plate', 'N/A')}</p>
+    <div class="pod-card pod-card-blue {rtl_class}">
+        <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem;">
+            <div style="width:44px;height:44px;border-radius:50%;background:var(--trella-light);
+                display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0;">🚛</div>
+            <div>
+                <div style="font-size:1.1rem;font-weight:700;color:#1F2937;">{carrier}</div>
+                <div style="font-size:0.8rem;color:var(--trella-gray);">{mobile} &nbsp;·&nbsp; {plate}</div>
+            </div>
+        </div>
+        <span class="status-badge status-dropoff">● {t('at_dropoff')}</span>
     </div>
     """, unsafe_allow_html=True)
 
-    # Shipment details
+    # Route card
+    pickup_city = shipment.get("pickup_city", "")
+    pickup_name = shipment.get("pickup_name", "")
+    dest_city = shipment.get("destination_city", "")
+    dest_name = shipment.get("destination_name", "")
+
     st.markdown(f"""
-    <div class="detail-card {'rtl' if is_rtl() else ''}">
-        <p><strong>🔑 {t('shipment_ref')}:</strong> {shipment.get('key', 'N/A')}</p>
-        <p><strong>🏭 {t('shipper')}:</strong> {shipment.get('entity', 'N/A')}</p>
-        <p><strong>📦 {t('commodity')}:</strong> {shipment.get('commodity', 'N/A')}</p>
-        <p><strong>⚖️ {t('weight')}:</strong> {shipment.get('weight', 0)}</p>
-        <p><strong>📍 {t('pickup')}:</strong> {shipment.get('pickup_name', '')} — {shipment.get('pickup_city', '')}</p>
-        <p><strong>🏁 {t('destination')}:</strong> {shipment.get('destination_name', '')} — {shipment.get('destination_city', '')}</p>
-        <p><strong>📊 {t('status')}:</strong> ✅ {t('at_dropoff')}</p>
+    <div class="route-card {rtl_class}">
+        <div class="route-point">
+            <div class="route-dot origin"></div>
+            <div>
+                <div class="route-city">{pickup_city}</div>
+                <div class="route-name">{pickup_name}</div>
+            </div>
+        </div>
+        <div class="route-line"></div>
+        <div class="route-point">
+            <div class="route-dot dest"></div>
+            <div>
+                <div class="route-city">{dest_city}</div>
+                <div class="route-name">{dest_name}</div>
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("---")
+    # Details card
+    entity = shipment.get("entity", "N/A")
+    commodity = shipment.get("commodity", "N/A")
+    weight = shipment.get("weight", 0)
+    distance = shipment.get("distance", 0)
+    try:
+        distance = f"{float(distance):,.0f} km"
+    except (ValueError, TypeError):
+        distance = str(distance)
+
+    st.markdown(f"""
+    <div class="pod-card {rtl_class}">
+        <div class="detail-row">
+            <span class="detail-label">{t('shipper')}</span>
+            <span class="detail-value">{entity}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">{t('commodity')}</span>
+            <span class="detail-value">{commodity}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">{t('weight')}</span>
+            <span class="detail-value">{weight} t</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">{t('distance')}</span>
+            <span class="detail-value">{distance}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">{t('shipment_ref')}</span>
+            <span class="detail-value" style="font-size:0.8rem;font-family:monospace;">{shipment.get('key', 'N/A')}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
     confirmed = st.checkbox(t("confirm_checkbox"), key="details_confirmed")
-
     if confirmed:
         if st.button(t("proceed"), type="primary", use_container_width=True):
             st.session_state.step = "upload"
             st.rerun()
 
 
+# ─────────────────────────────────────────────
+# STEP 3 — POD UPLOAD (native camera)
+# ─────────────────────────────────────────────
 def render_upload(shipment: dict):
-    """Step 3: POD upload with quality checking."""
-    inject_rtl_css()
+    apply_rtl()
+    render_header()
+    render_steps(3)
 
-    st.markdown(f"### {t('upload_title')}")
-    st.markdown(f"**{t('shipment_ref')}:** {shipment.get('key', '')}")
-    st.markdown("---")
+    rtl_class = "rtl" if is_rtl() else ""
 
-    # Initialize attempt counter
     if "quality_attempts" not in st.session_state:
         st.session_state.quality_attempts = 0
-    if "pod_submitted" not in st.session_state:
-        st.session_state.pod_submitted = False
     if "in_fallback_mode" not in st.session_state:
         st.session_state.in_fallback_mode = False
 
-    # Check if we're in fallback mode (3 failed quality attempts)
     if st.session_state.in_fallback_mode:
         render_fallback_upload(shipment)
         return
 
-    # Show photo instructions
-    st.info(t("upload_instructions"))
-    instructions = [t(f"instruction_{i}") for i in range(1, 7)]
-    for instr in instructions:
-        st.markdown(f"  ✓ {instr}")
+    st.markdown(f'<h3 style="margin:0 0 0.25rem;">{t("upload_title")}</h3>', unsafe_allow_html=True)
 
-    st.markdown("---")
+    # Tips as compact pills
+    tips = ["tip_surface", "tip_steady", "tip_edges", "tip_glare", "tip_lens", "tip_light"]
+    icons = ["☀️", "📐", "📄", "🚫", "🔍", "🌤️"]
+    pills = "".join(f'<span class="tip-pill">{icons[i]} {t(tip)}</span>' for i, tip in enumerate(tips))
+    st.markdown(f'<div class="tips-grid">{pills}</div>', unsafe_allow_html=True)
 
-    # Show remaining attempts
+    # Attempts remaining
     remaining = MAX_QUALITY_ATTEMPTS - st.session_state.quality_attempts
     if st.session_state.quality_attempts > 0:
-        st.warning(t("attempts_remaining").format(remaining))
+        st.markdown(
+            f'<span class="attempts-badge">⚠️ {t("attempts_remaining").format(remaining)}</span>',
+            unsafe_allow_html=True,
+        )
 
-    # Camera input (primary on mobile)
-    camera_photo = st.camera_input(t("take_photo"), key=f"camera_{st.session_state.quality_attempts}")
+    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-    # File upload (secondary / fallback)
+    # ── File uploader (triggers native camera on mobile via OS file picker) ──
     uploaded_file = st.file_uploader(
-        t("upload_file"),
-        type=["jpg", "jpeg", "png"],
-        key=f"upload_{st.session_state.quality_attempts}",
+        t("take_photo"),
+        type=["jpg", "jpeg", "png", "heic", "heif"],
+        key=f"pod_upload_{st.session_state.quality_attempts}",
+        help=t("upload_hint"),
     )
 
-    # Process whichever input is provided
-    image_source = camera_photo or uploaded_file
+    st.markdown(f"""
+    <p style="text-align:center; font-size:0.82rem; color:var(--trella-gray); margin-top:0.25rem;">
+        📷 {t('upload_hint')}
+    </p>
+    """, unsafe_allow_html=True)
 
-    if image_source is not None:
-        image_bytes = image_source.getvalue()
-
-        # Show preview
+    if uploaded_file is not None:
+        image_bytes = uploaded_file.getvalue()
         st.image(image_bytes, use_container_width=True)
 
-        # Analyze quality
         with st.spinner(t("analyzing")):
             result = analyze_image_quality(image_bytes)
 
         if result["passed"]:
-            st.success(t("quality_passed"))
+            st.markdown(f"""
+            <div class="quality-pass">
+                <span style="font-size:1.2rem;">✅</span> {t('quality_passed')}
+            </div>
+            """, unsafe_allow_html=True)
 
-            # Show quality scores
-            with st.expander("📊 Quality Scores", expanded=False):
-                for metric, value in result["scores"].items():
-                    st.markdown(f"**{metric}:** {value}")
-
-            # Submit button
             if st.button(t("submit_pod"), type="primary", use_container_width=True):
-                with st.spinner("Uploading..."):
+                with st.spinner("..."):
                     filepath = save_pod_image(shipment["key"], image_bytes, index=0)
-                    save_pod_metadata(
-                        shipment["key"], shipment, [filepath], mode="single"
-                    )
-                    st.session_state.pod_submitted = True
+                    save_pod_metadata(shipment["key"], shipment, [filepath], mode="single")
                     st.session_state.step = "success"
                     st.rerun()
         else:
-            # Quality failed
-            st.error(t("quality_failed"))
-            for reason in result["reasons"]:
-                st.markdown(f"  ⚠️ {t(reason)}")
-
-            # Show quality scores for debugging
-            with st.expander("📊 Quality Scores", expanded=False):
-                for metric, value in result["scores"].items():
-                    st.markdown(f"**{metric}:** {value}")
+            reasons_html = "".join(f"<div>⚠️ {t(r)}</div>" for r in result["reasons"])
+            st.markdown(f"""
+            <div class="quality-fail {rtl_class}">
+                <div style="font-weight:700; margin-bottom:0.5rem;">❌ {t('quality_failed')}</div>
+                {reasons_html}
+            </div>
+            """, unsafe_allow_html=True)
 
             st.session_state.quality_attempts += 1
-
             if st.session_state.quality_attempts >= MAX_QUALITY_ATTEMPTS:
-                st.warning(t("fallback_title"))
                 st.session_state.in_fallback_mode = True
                 st.rerun()
             else:
-                st.info(f"🔄 {t('retake')}")
+                st.markdown(f'<span class="attempts-badge">🔄 {t("retake")}</span>', unsafe_allow_html=True)
 
 
 def render_fallback_upload(shipment: dict):
-    """Fallback: upload 3 photos when single-photo quality keeps failing."""
-    inject_rtl_css()
+    apply_rtl()
+    rtl_class = "rtl" if is_rtl() else ""
 
-    st.warning(t("fallback_title"))
-    st.markdown(t("fallback_message"))
-    st.markdown("---")
+    st.markdown(f"""
+    <div class="quality-fail {rtl_class}" style="border-color: var(--trella-orange); background: #FFFBEB;">
+        <div style="font-weight:700; font-size:1.05rem; margin-bottom:0.35rem; color: #92400E;">
+            📸 {t('fallback_title')}
+        </div>
+        <div style="color: #78350F;">{t('fallback_message')}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Three file uploaders
     photos = []
     for i in range(1, 4):
-        label = t("fallback_photo").format(i)
-        photo = st.file_uploader(
-            label,
-            type=["jpg", "jpeg", "png"],
-            key=f"fallback_photo_{i}",
-        )
+        label = f"{t('fallback_photo').format(i)} / 3"
+        photo = st.file_uploader(label, type=["jpg", "jpeg", "png", "heic", "heif"], key=f"fallback_{i}")
         if photo:
             photos.append(photo)
             st.image(photo, caption=label, use_container_width=True)
 
-    st.markdown("---")
-
     if len(photos) == 3:
         if st.button(t("submit_fallback"), type="primary", use_container_width=True):
-            with st.spinner("Uploading..."):
+            with st.spinner("..."):
                 file_paths = []
                 for idx, photo in enumerate(photos):
-                    filepath = save_pod_image(
-                        shipment["key"], photo.getvalue(), index=idx
-                    )
+                    filepath = save_pod_image(shipment["key"], photo.getvalue(), index=idx)
                     file_paths.append(filepath)
-
-                save_pod_metadata(
-                    shipment["key"], shipment, file_paths, mode="fallback_triple"
-                )
-                st.session_state.pod_submitted = True
+                save_pod_metadata(shipment["key"], shipment, file_paths, mode="fallback_triple")
                 st.session_state.step = "success"
                 st.rerun()
     elif len(photos) > 0:
-        st.info(t("upload_all_three"))
+        st.markdown(f'<span class="attempts-badge">{t("upload_all_three")}</span>', unsafe_allow_html=True)
 
 
+# ─────────────────────────────────────────────
+# ALREADY SUBMITTED
+# ─────────────────────────────────────────────
 def render_already_submitted(submission: dict, shipment: dict):
-    """Show a screen indicating POD was already uploaded, with submission details."""
-    # If no language set yet, show language picker first then come back
     if "language" not in st.session_state:
-        # Quick language selection inline
-        st.markdown(
-            "<h2 style='text-align:center;'>📄 Proof of Delivery</h2>",
-            unsafe_allow_html=True,
-        )
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            if st.button("🇬🇧 English", use_container_width=True, key="als_en"):
-                st.session_state.language = "en"
-                st.rerun()
-        with col2:
-            if st.button("🇸🇦 العربية", use_container_width=True, key="als_ar"):
-                st.session_state.language = "ar"
-                st.rerun()
-        with col3:
-            if st.button("🇵🇰 اردو", use_container_width=True, key="als_ur"):
-                st.session_state.language = "ur"
-                st.rerun()
-        st.stop()
+        render_language_selection()
+        return
 
-    inject_rtl_css()
+    apply_rtl()
+    render_header()
 
-    st.markdown(
-        '<div class="success-icon">✅</div>', unsafe_allow_html=True
-    )
-    st.markdown(f"## {t('already_submitted_title')}")
-
-    # Parse and format the upload timestamp
     uploaded_at = submission.get("uploaded_at", "unknown")
     try:
         dt = datetime.fromisoformat(uploaded_at)
-        formatted_date = dt.strftime("%Y-%m-%d %H:%M")
+        formatted_date = dt.strftime("%Y-%m-%d  %H:%M")
     except (ValueError, TypeError):
         formatted_date = uploaded_at
 
-    st.markdown(t("already_submitted_msg").format(formatted_date))
-
-    mode = submission.get("upload_mode", "single")
-    mode_display = "Single photo" if mode == "single" else "3 photos (fallback)"
     file_count = len(submission.get("file_paths", []))
+    rtl_class = "rtl" if is_rtl() else ""
 
-    st.markdown(t("already_submitted_mode").format(mode_display))
-    st.markdown(t("already_submitted_count").format(file_count))
+    st.markdown(f"""
+    <div class="success-container">
+        <div class="success-check">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"
+                 stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+        </div>
+        <div class="success-title">{t('already_submitted_title')}</div>
+        <div class="success-msg">{t('already_submitted_msg').format(formatted_date)}</div>
+        <div style="margin-top:0.5rem;">
+            <span class="status-badge status-dropoff">{file_count} photo{'s' if file_count != 1 else ''}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-    # Show thumbnails of uploaded images
     file_paths = submission.get("file_paths", [])
     if file_paths:
-        st.markdown("---")
         cols = st.columns(min(len(file_paths), 3))
         for idx, fp in enumerate(file_paths):
             if os.path.exists(fp):
                 with cols[idx % 3]:
-                    st.image(fp, caption=f"POD #{idx + 1}", use_container_width=True)
+                    st.image(fp, use_container_width=True)
 
-    st.markdown("---")
-
-    # Shipment summary
-    border_side = "right" if is_rtl() else "left"
     st.markdown(f"""
-    <div class="detail-card {'rtl' if is_rtl() else ''}">
-        <p><strong>🔑 {t('shipment_ref')}:</strong> {shipment.get('key', 'N/A')}</p>
-        <p><strong>👤 {t('driver_name')}:</strong> {shipment.get('carrier', 'N/A')}</p>
-        <p><strong>🏁 {t('destination')}:</strong> {shipment.get('destination_name', '')} — {shipment.get('destination_city', '')}</p>
+    <div class="pod-card pod-card-accent {rtl_class}" style="margin-top:1rem;">
+        <div class="detail-row">
+            <span class="detail-label">{t('driver_name')}</span>
+            <span class="detail-value">{shipment.get('carrier', 'N/A')}</span>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">{t('destination')}</span>
+            <span class="detail-value">{shipment.get('destination_city', '')}</span>
+        </div>
     </div>
+    <p style="text-align:center; font-size:0.85rem; color:var(--trella-gray); margin-top:1rem;">
+        {t('already_submitted_note')}
+    </p>
     """, unsafe_allow_html=True)
 
-    st.info(t("already_submitted_note"))
 
-
+# ─────────────────────────────────────────────
+# SUCCESS
+# ─────────────────────────────────────────────
 def render_success():
-    """Step 4: Success confirmation screen."""
-    inject_rtl_css()
+    apply_rtl()
+    render_header()
 
-    st.markdown(
-        '<div class="success-icon">✅</div>', unsafe_allow_html=True
-    )
-    st.markdown(f"## {t('success_title')}")
-    st.markdown(t("success_message"))
+    st.markdown(f"""
+    <div class="success-container">
+        <div class="success-check">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"
+                 stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+        </div>
+        <div class="success-title">{t('success_title')}</div>
+        <div class="success-msg">{t('success_message')}</div>
+    </div>
+    """, unsafe_allow_html=True)
     st.balloons()
 
 
 # ─────────────────────────────────────────────
-# MAIN APP
+# MAIN
 # ─────────────────────────────────────────────
 def main():
     st.set_page_config(
-        page_title="Trella POD Capture",
-        page_icon="📄",
+        page_title="Trella POD",
+        page_icon="🚛",
         layout="centered",
         initial_sidebar_state="collapsed",
     )
-    inject_mobile_css()
+    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
-    # ── Get shipment key from URL query param ──
     params = st.query_params
     shipment_key = params.get("shipment", None)
 
     if not shipment_key:
-        st.error("⚠️ No shipment reference found. Please use the link sent to your phone.")
-        st.markdown(
-            "**Expected URL format:**  \n"
-            "`https://<app-url>/?shipment=<shipment_key>`"
-        )
+        render_header()
+        st.markdown("""
+        <div class="pod-card" style="text-align:center; padding:2rem;">
+            <div style="font-size:2.5rem; margin-bottom:1rem;">🔗</div>
+            <div style="font-weight:600; color:#1F2937; margin-bottom:0.5rem;">No shipment link found</div>
+            <div style="color:var(--trella-gray); font-size:0.9rem;">
+                Please use the link sent to your phone.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
-    # ── Fetch shipment data ──
     shipment = get_shipment(shipment_key)
-
     if shipment is None:
-        # Try fetching fresh data (cache might be stale)
         st.cache_data.clear()
         shipment = get_shipment(shipment_key)
 
     if shipment is None:
-        st.error("⚠️ Shipment not found or not currently at drop-off status.")
-        st.markdown(f"**Shipment Key:** `{shipment_key}`")
-        st.markdown("Please contact dispatch if you believe this is an error.")
+        render_header()
+        st.markdown(f"""
+        <div class="pod-card" style="text-align:center; padding:2rem;">
+            <div style="font-size:2.5rem; margin-bottom:1rem;">⚠️</div>
+            <div style="font-weight:600; color:#1F2937; margin-bottom:0.5rem;">Shipment not found</div>
+            <div style="color:var(--trella-gray); font-size:0.9rem;">
+                This shipment may have been completed or is not at drop-off status.<br>
+                <span style="font-family:monospace; font-size:0.8rem;">{shipment_key}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         st.stop()
 
-    # ── Check if POD was already submitted ──
     existing = get_existing_submission(shipment_key)
     if existing and st.session_state.get("step") != "success":
-        # POD already uploaded — show the result screen
         render_already_submitted(existing, shipment)
         st.stop()
 
-    # ── Initialize session state ──
     if "step" not in st.session_state:
         st.session_state.step = "language"
 
-    # ── Route to the correct step ──
     step = st.session_state.step
-
     if step == "language":
         render_language_selection()
     elif step == "confirm":
