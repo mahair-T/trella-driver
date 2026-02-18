@@ -25,7 +25,7 @@ REDASH_API_URL = (
 )
 
 # ── Update this to your deployed Streamlit app URL ──
-APP_BASE_URL = "https://your-app.streamlit.app"
+APP_BASE_URL = "https://trella-driver.streamlit.app"
 
 
 # WhatsApp message templates per language
