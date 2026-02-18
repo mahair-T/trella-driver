@@ -414,9 +414,19 @@ def inject_mobile_css():
     <style>
         /* Mobile-first responsive design */
         .block-container { 
-            padding: 1rem 1rem 3rem 1rem !important; 
+            padding: 4rem 1rem 3rem 1rem !important; 
             max-width: 100% !important; 
         }
+        /* Push content below Streamlit toolbar */
+        header[data-testid="stHeader"] {
+            background: rgba(255, 255, 255, 0.95) !important;
+            backdrop-filter: blur(10px);
+        }
+        /* Hide hamburger menu and footer on mobile for cleaner driver experience */
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
+        header { visibility: visible !important; height: 2.5rem !important; }
+        section[data-testid="stSidebar"] { display: none; }
         /* Larger touch targets */
         .stButton > button { 
             width: 100%; 
