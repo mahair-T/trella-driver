@@ -23,7 +23,6 @@ import os
 import json
 import base64
 
-TRELLA_LOGO_B64 = "data:image/png;base64,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"
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -516,9 +515,15 @@ def get_existing_submission(shipment_key: str) -> dict | None:
 # UI HELPERS
 # ─────────────────────────────────────────────
 def render_header():
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        if os.path.exists("trella.png"):
+            st.image("trella.png", width=120)
+        else:
+            st.markdown('<div class="app-logo" style="text-align:center;">trella<span>.</span></div>', unsafe_allow_html=True)
+    
     st.markdown("""
-    <div class="app-header">
-        <div class="app-logo"><img src="{TRELLA_LOGO_B64}" alt="Trella"></div>
+    <div class="app-header" style="padding-top: 0;">
         <div class="app-subtitle">Proof of Delivery</div>
     </div>
     """, unsafe_allow_html=True)
